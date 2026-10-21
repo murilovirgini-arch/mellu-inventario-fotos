@@ -17,8 +17,8 @@ export default async(req,context)=>{
  if(old?.status==="confirmed")return json({request_id:d.request_id,pagina1:true,historico:true});
  const record=old||{...analysis,request_id:d.request_id,analysis_id:d.analysis_id,quantity:d.quantity,location:d.location.trim(),status:"pending",created_at:new Date().toISOString()};
  await store.setJSON(key,record);
- if(!process.env.MELLU_SHEETS_URL)throw Error("Integração da planilha ainda em configuração. Fotos e contagem estão preservadas; tente reenviar.");
- const response=await fetch(process.env.MELLU_SHEETS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({request_id:d.request_id,codigo:record.product.barcode,nome:record.product.name,validade:record.product.validity,estoque_real:d.quantity,estoque_sistema:stock[record.product.barcode]?.stock??"",localizacao:record.location}),signal:AbortSignal.timeout(45000)});
+ const sheetsURL=process.env.MELLU_SHEETS_URL||"https://script.google.com/macros/s/AKfycbz6104ODjZ88oS9FD0Sb_9CIh2qtzz3vLCbDqCTPvQM3-ZTMHrimfM1XnRDAEUqUjSK/exec";
+ const response=await fetch(sheetsURL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({request_id:d.request_id,codigo:record.product.barcode,nome:record.product.name,validade:record.product.validity,estoque_real:d.quantity,estoque_sistema:stock[record.product.barcode]?.stock??"",localizacao:record.location}),signal:AbortSignal.timeout(45000)});
  const r=await response.json();
  if(!r.ok||r.request_id!==d.request_id||!r.pagina1||!r.historico)throw Error(r.message||"A planilha ainda não confirmou as duas abas. Tente reenviar.");
  await store.setJSON(key,{...record,status:"confirmed",confirmed_at:new Date().toISOString()});
