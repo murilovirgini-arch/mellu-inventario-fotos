@@ -1,0 +1,24 @@
+import {json,storeFor,originOK} from "../../lib/common.mjs";
+const uuid=/^[a-f0-9-]{36}$/i;
+export default async(req,context)=>{
+ if(req.method!=="POST")return json({error:"Método inválido."},405);
+ if(!originOK(req))return json({error:"Origem inválida."},403);
+ try{
+ const d=await req.json();
+ if(!uuid.test(d.request_id)||!uuid.test(d.analysis_id)||!Number.isSafeInteger(d.quantity)||d.quantity<0||typeof d.location!=="string"||!d.location.trim()||d.location.length>120)throw Error("Quantidade ou localização inválida.");
+ const store=storeFor(context),analysis=await store.get("analyses/"+d.analysis_id,{type:"json"});
+ if(!analysis)throw Error("Leitura não encontrada. Analise as fotos novamente.");
+ const key="products/"+analysis.product.barcode+"/"+d.request_id;
+ const old=await store.get(key,{type:"json"});
+ if(old&&(old.analysis_id!==d.analysis_id||old.quantity!==d.quantity||old.location!==d.location.trim()))return json({error:"Identificador já utilizado com outros dados."},409);
+ if(old?.status==="confirmed")return json({request_id:d.request_id,pagina1:true,historico:true});
+ const record=old||{...analysis,request_id:d.request_id,analysis_id:d.analysis_id,quantity:d.quantity,location:d.location.trim(),status:"pending",created_at:new Date().toISOString()};
+ await store.setJSON(key,record);
+ if(!process.env.MELLU_SHEETS_URL)throw Error("Integração da planilha ainda em configuração. Fotos e contagem estão preservadas; tente reenviar.");
+ const response=await fetch(process.env.MELLU_SHEETS_URL,{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({request_id:d.request_id,codigo:record.product.barcode,nome:record.product.name,validade:record.product.validity,estoque_real:d.quantity,localizacao:record.location}),signal:AbortSignal.timeout(45000)});
+ const r=await response.json();
+ if(!r.ok||r.request_id!==d.request_id||!r.pagina1||!r.historico)throw Error(r.message||"A planilha ainda não confirmou as duas abas. Tente reenviar.");
+ await store.setJSON(key,{...record,status:"confirmed",confirmed_at:new Date().toISOString()});
+ return json({request_id:d.request_id,pagina1:true,historico:true});
+ }catch(e){return json({error:e.message||"Não foi possível confirmar. Tente reenviar."},503);}
+};
