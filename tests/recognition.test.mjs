@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mergeReadings,validEAN} from '../lib/recognition.mjs';
+const front={brand:'Natucera',name:'Creme Esfoliante Essencial',specifications:'Damasco e jojoba'};
+const back={barcode:'7898936910530',content:'500 g',validity:'05/2024'};
+test('joins front and back fields into description and separate columns',()=>{assert.deepEqual(mergeReadings([front,back]),{name:'Natucera · Creme Esfoliante Essencial · Damasco e jojoba · 500 g',barcode:'7898936910530',validity:'05/2024'});});
+test('merges ten partial readings without requiring a code in every batch',()=>{const reads=Array.from({length:10},(_,i)=>i===9?back:front);assert.equal(mergeReadings(reads).barcode,back.barcode);});
+test('rejects incompatible codes instead of mixing two products',()=>{assert.throws(()=>mergeReadings([front,back,{barcode:'3337875397797'}]),/único código/);});
+test('rejects missing or invalid check digits',()=>{assert.equal(validEAN('7898936910531'),false);assert.throws(()=>mergeReadings([front,{barcode:'7898936910531'}]),/código/);assert.throws(()=>mergeReadings([front]),/código/);});
+test('does not silently choose between conflicting expiry dates',()=>{assert.throws(()=>mergeReadings([front,back,{validity:'06/2025'}]),/validades diferentes/);});
