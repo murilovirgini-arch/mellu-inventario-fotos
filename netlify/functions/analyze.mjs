@@ -15,7 +15,7 @@ export default async(req,context)=>{
  }));
  const codes=[...new Set(results.map(x=>String(x.barcode||"").replace(/\D/g,"")).filter(Boolean))];
  if(codes.length!==1||!validEAN(codes[0]))throw Error("Não consegui confirmar um único código de barras válido. Tire uma foto nítida dos números abaixo das barras e tente novamente.");
- const clean=v=>typeof v==="string"?v.trim().replace(/\\s+/g," "):"";
+ const clean=v=>typeof v==="string"?v.trim().replace(/\s+/g," "):"";
  const pick=field=>results.map(x=>clean(x[field])).filter(Boolean).sort((a,b)=>b.length-a.length)[0]||"";
  const name=pick("name");if(!name)throw Error("Não consegui ler o nome. Acrescente uma foto nítida da frente da embalagem.");
  const parts=[pick("brand"),name,pick("specifications"),pick("content")];
