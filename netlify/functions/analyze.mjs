@@ -47,5 +47,10 @@ export default async(req,context)=>{
  ids=[...new Set(ids)];
  await store.setJSON("analyses/"+analysis_id,{product,photos:ids,model,created_at:new Date().toISOString()});
  return json({analysis_id,model,product,warnings:product.validity?[]:["Validade não legível. Acrescente uma foto da validade se ela estiver na embalagem."]});
- }catch(e){console.error("analysis",e.message);return json({error:/foto|fotos|código|validades|nome/.test(e.message)?e.message:"Não foi possível analisar agora. As fotos continuam na tela; tente novamente."},422);}
+  }catch(e){
+ console.error("analysis",e.message);
+ const upstreamStatus=Number(e.status??e.statusCode??e.response?.status);
+ const temporary=[408,429,500,502,503,504].includes(upstreamStatus)||["TimeoutError","AbortError","SyntaxError"].includes(e.name);
+ if(temporary)return json({error:"O serviço de leitura está ocupado ou demorou para responder. Suas fotos foram preservadas.",retryable:true},upstreamStatus===429?429:503);
+ return json({error:/foto|fotos|código|validades|nome/.test(e.message)?e.message:"Não foi possível analisar agora. As fotos continuam na tela; tente novamente."},422);}
 };
