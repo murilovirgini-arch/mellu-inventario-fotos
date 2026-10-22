@@ -1,3 +1,4 @@
+import {postAnalysis,readPhotoBatches} from "./analysis-recovery.mjs";
 const $=id=>document.getElementById(id);
 const batchCache=new Map();
 let photos=[],reading=null,processing=false,saving=false,syncPromise=null,retryTimer;
@@ -12,20 +13,12 @@ function invalidate(){reading=null;$("resultCard").hidden=true;updateControls();
 function compress(file){return new Promise((resolve,reject)=>{const image=new Image(),url=URL.createObjectURL(file);image.onload=()=>{try{let scale=Math.min(1,1600/Math.max(image.width,image.height)),canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(image.width*scale));canvas.height=Math.max(1,Math.round(image.height*scale));canvas.getContext("2d").drawImage(image,0,0,canvas.width,canvas.height);let quality=.82,data=canvas.toDataURL("image/jpeg",quality);while(data.length>200000&&quality>.45){quality-=.1;data=canvas.toDataURL("image/jpeg",quality);}while(data.length>200000&&canvas.width>640){const next=document.createElement("canvas");next.width=Math.round(canvas.width*.85);next.height=Math.round(canvas.height*.85);next.getContext("2d").drawImage(canvas,0,0,next.width,next.height);canvas=next;data=canvas.toDataURL("image/jpeg",.72);}if(data.length>200000)throw Error("Esta foto ficou muito grande. Fotografe apenas o detalhe da embalagem.");resolve(data);}catch(e){reject(e);}finally{URL.revokeObjectURL(url);}};image.onerror=()=>{URL.revokeObjectURL(url);reject(Error("Não foi possível abrir a imagem. Use JPEG, PNG ou uma foto da câmera."));};image.src=url;});}
 async function addPhotos(event){const files=Array.from(event.target.files||[]);if(!files.length)return;processing=true;invalidate();status("analysisStatus","Preparando fotos…","busy");try{for(const file of files){if(!file.type.startsWith("image/"))throw Error("Selecione apenas imagens.");photos.push(await compress(file));}renderPhotos();status("analysisStatus",photos.length+" foto(s) prontas. Toque em Ler embalagem com IA.");}catch(e){status("analysisStatus",e.message,"error");renderPhotos();}finally{processing=false;event.target.value="";updateControls();}}
 function renderPhotos(){$("previews").replaceChildren();photos.forEach((src,index)=>{const item=document.createElement("div");item.className="preview";const img=document.createElement("img");img.src=src;img.alt="Foto "+(index+1)+" da embalagem";const remove=document.createElement("button");remove.type="button";remove.textContent="×";remove.setAttribute("aria-label","Remover foto "+(index+1));remove.disabled=processing;remove.onclick=()=>{photos.splice(index,1);invalidate();renderPhotos();status("analysisStatus","Fotos alteradas. Leia novamente para atualizar os dados.");};item.append(img,remove);$("previews").append(item);});}
-async function analyze(){if(processing||!photos.length)return;processing=true;invalidate();renderPhotos();status("analysisStatus","Lendo "+photos.length+" foto(s). Aguarde a identificação do produto…","busy");try{const send=async payload=>{
- const response=await fetch("/.netlify/functions/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(57000)});
- const result=await response.json().catch(()=>({}));if(!response.ok)throw Error(result.error||"A IA não conseguiu ler estas fotos.");return result;
-};
- const batch_ids=[];
- for(let offset=0;offset<photos.length;offset+=3){
-  const chunk=photos.slice(offset,offset+3),last=Math.min(offset+3,photos.length);
-  status("analysisStatus","Lendo fotos "+(offset+1)+" a "+last+" de "+photos.length+"…","busy");
-  const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(chunk.join("")));
-  const key=Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,"0")).join("");
-  let id=batchCache.get(key);
-  if(!id){const batch=await send({stage:"extract",images:chunk});id=batch.batch_id;if(!id)throw Error("Não foi possível confirmar a leitura destas fotos.");batchCache.set(key,id);}
-  batch_ids.push(id);
- }
+async function analyze(){if(processing||!photos.length)return;processing=true;invalidate();renderPhotos();status("analysisStatus","Lendo "+photos.length+" foto(s). Aguarde a identificação do produto…","busy");try{const send=payload=>postAnalysis(payload,{
+ onRetry:({attempt,attempts})=>status("analysisStatus","A leitura está demorando. Retomando automaticamente ("+attempt+"/"+attempts+")…","busy"),
+ validate:result=>payload.stage==="extract"?typeof result.batch_id==="string":typeof result.analysis_id==="string"&&!!result.product
+});
+ const batch_ids=await readPhotoBatches(photos,{send,cache:batchCache,
+ onProgress:({completed,total})=>status("analysisStatus","Fotos lidas: "+completed+" de "+total+"…","busy")});
  status("analysisStatus","Reunindo os dados de "+photos.length+" fotos…","busy");
  const result=await send({batch_ids});
  reading=result;$("productName").textContent=result.product.name;$("productEAN").textContent=result.product.barcode;$("productValidity").textContent=result.product.validity?result.product.validity.split("-").reverse().join("/"):"Não identificada nas fotos";$("readWarning").textContent=(result.warnings||[]).join(" ");$("resultCard").hidden=false;status("analysisStatus","Leitura concluída. As fotos estão guardadas e vinculadas ao EAN.","success");}catch(e){status("analysisStatus",e.name==="TimeoutError"?"A leitura demorou demais. As fotos continuam aqui; tente novamente.":e.message,"error");}finally{processing=false;renderPhotos();updateControls();}}
