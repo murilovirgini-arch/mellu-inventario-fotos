@@ -9,7 +9,8 @@ export default async(req,context)=>{
  if(!originOK(req))return json({error:"Origem inválida."},403);
  try{
  const body=await req.json(),store=storeFor(context);
- let results=[],ids=[],model=process.env.MELLU_AI_MODEL||"gemini-3.8-flash";
+ const started=Date.now(),probe=body.stage==="compare";
+ let results=[],ids=[],model=body.quality==="fast"?"gemini-3.5-flash-lite":process.env.MELLU_AI_MODEL||"gemini-3.8-flash";
  if(Array.isArray(body.batch_ids)){
   if(!body.batch_ids.length||body.batch_ids.some(id=>!uuid.test(id)))throw Error("Leitura das fotos inválida. Analise novamente.");
   for(const id of new Set(body.batch_ids)){
@@ -20,24 +21,27 @@ export default async(req,context)=>{
  }else{
   if(!Array.isArray(body.images)||!body.images.length)throw Error("Envie fotos da embalagem.");
   // Transport batches keep each request below platform payload and time limits.
-  if(body.stage==="extract"&&body.images.length>3)throw Error("Envio de fotos inválido. Atualize a página.");
+  if(["extract","compare"].includes(body.stage)&&body.images.length>3)throw Error("Envio de fotos inválido. Atualize a página.");
   const images=body.images.map(imageData);
   if(images.some(x=>!x||x.data.length>200000))throw Error("Foto inválida ou muito grande.");
   const direct=process.env.MELLU_GEMINI_API_KEY;
   const ai=new GoogleGenAI(direct?{apiKey:direct,httpOptions:{baseUrl:"https://generativelanguage.googleapis.com"}}:{});
   const extracted=await Promise.all(images.map(async img=>{
    const bytes=Buffer.from(img.data,"base64"),id=createHash("sha256").update(bytes).digest("hex");
-   const cacheKey="ocr/v2/"+model+"/"+id;
-   let result=await store.get(cacheKey,{type:"json"});
+   const cacheKey=(model.includes("flash-lite")?"ocr/v3-minimal/":"ocr/v2/")+model+"/"+id;
+   let result=probe?null:await store.get(cacheKey,{type:"json"});
+   const cached=!!result,ocrStart=Date.now();
    if(!result){
-    const r=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:prompt},{inlineData:img}]}],config:{responseMimeType:"application/json",temperature:0}});
+    const r=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:prompt},{inlineData:img}]}],config:{responseMimeType:"application/json",temperature:0,...(model.includes("flash-lite")?{thinkingConfig:{thinkingLevel:"minimal"}}:{})}});
     result=JSON.parse(r.text);
-    await store.setJSON(cacheKey,result);
+    if(!probe)await store.setJSON(cacheKey,result);
    }
-   await store.set("images/"+id,bytes,{metadata:{contentType:img.mimeType},onlyIfNew:true});
+   console.info("vision_timing",JSON.stringify({model,cached,ms:Date.now()-ocrStart}));
+   if(!probe)await store.set("images/"+id,bytes,{metadata:{contentType:img.mimeType},onlyIfNew:true});
    return {result,id};
   }));
   results=extracted.map(x=>x.result);ids=extracted.map(x=>x.id);
+  if(probe)return json({model,elapsed_ms:Date.now()-started,readings:results});
   if(body.stage==="extract"){
    const batch_id=randomUUID();await store.setJSON("batches/"+batch_id,{results,photos:ids,model});
    return json({batch_id,photo_count:images.length,model});
