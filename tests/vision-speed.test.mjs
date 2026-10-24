@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import vm from "node:vm";
+import {readFile} from "node:fs/promises";
+import {createHash,randomUUID} from "node:crypto";
+const source=(await readFile(new URL("../netlify/functions/analyze.mjs",import.meta.url),"utf8")).replace(/^import .*;$/gm,"").replace("export default async(req,context)=>","async function handler(req,context)");
+function setup(){const calls=[],writes=[];const context=vm.createContext({Response,Date,Buffer,Set,JSON,Number,String,console:{info(){},error(){}},process:{env:{}},createHash,randomUUID,json:(v,s=200)=>Response.json(v,{status:s}),originOK:()=>true,imageData:()=>({mimeType:"image/jpeg",data:"YQ=="}),storeFor:()=>({get:async()=>null,set:async(...v)=>writes.push(v),setJSON:async(...v)=>writes.push(v)}),mergeReadings:()=>({name:"Teste",barcode:"7898936910530",validity:"05/2024"}),GoogleGenAI:class{models={generateContent:async options=>{calls.push(options);return {text:JSON.stringify({name:"Teste",barcode:"7898936910530"})};}};}});vm.runInContext(source,context);return {calls,writes,run:body=>context.handler({method:"POST",json:async()=>body},{})};}
+test("fast comparison uses minimal thinking without data writes",async()=>{const s=setup(),r=await s.run({stage:"compare",quality:"fast",images:["image"]}),v=await r.json();assert.equal(r.status,200);assert.equal(v.model,"gemini-3.5-flash-lite");assert.equal(s.calls[0].config.thinkingConfig.thinkingLevel,"minimal");assert.equal(s.writes.length,0);assert.equal(v.readings.length,1);});
+test("existing extraction keeps its model and receipt contract",async()=>{const s=setup(),r=await s.run({stage:"extract",images:["image"]}),v=await r.json();assert.equal(v.model,"gemini-3.8-flash");assert.equal(typeof v.batch_id,"string");assert.equal(v.photo_count,1);assert.ok(s.writes.length>=3);assert.equal(s.calls[0].config.thinkingConfig,undefined);});
+test("comparison limits only transport size, without invoking AI",async()=>{const s=setup(),r=await s.run({stage:"compare",images:["1","2","3","4"]});assert.equal(r.status,422);assert.equal(s.calls.length,0);assert.equal(s.writes.length,0);});
