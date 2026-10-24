@@ -1,9 +1,11 @@
 import {GoogleGenAI} from "@google/genai";
 import {randomUUID,createHash} from "node:crypto";
 import {json,storeFor,originOK,imageData} from "../../lib/common.mjs";
+import {decodePhotoEAN} from "../../lib/barcode.mjs";
 import {mergeReadings} from "../../lib/recognition.mjs";
 const uuid=/^[a-f0-9-]{36}$/i;
 const prompt="Leia esta foto de UMA embalagem. Extraia somente informações claramente visíveis, sem completar letras ou números cortados. Responda JSON: {\"brand\":marca ou null,\"name\":nome comercial/tipo E linha do produto, copiando os dois textos, ou null,\"specifications\":variante essencial de identificação, como fragrância ou cor, ou null,\"content\":peso ou volume líquido com unidade, por exemplo 500 g ou 200 ml, ou null,\"barcode\":somente os dígitos impressos abaixo das barras, como string, ou null,\"validity\":validade como impressa ou null}. A descrição será marca + nome + variante + peso/volume. Priorize o rótulo FRONTAL para marca, nome e variante; use outras faces para completar peso/volume. Não use fabricante/distribuidor/endereço como nome, não inclua propaganda, benefícios, ingredientes extensos, lote, composição, número de aplicações nem validade na descrição. Preserve todos os dígitos e zeros iniciais do código; se não estiverem todos nítidos, barcode=null. Não confunda fabricação ou lote com validade.";
+const fastPrompt=prompt+" Inclua também brand_complete (booleano). Para brand, copie somente o logotipo inteiro: se o começo ou o fim da palavra estiver cortado, oculto pela curvatura ou sem leitura segura, use brand=null e brand_complete=false. Quando o logotipo estiver inteiro, brand_complete=true. Inclua sufixos do próprio logotipo, como PRO. Não complete a marca por semelhança ou memória.";
 export default async(req,context)=>{
  if(req.method!=="POST")return json({error:"Método inválido."},405);
  if(!originOK(req))return json({error:"Origem inválida."},403);
@@ -28,12 +30,17 @@ export default async(req,context)=>{
   const ai=new GoogleGenAI(direct?{apiKey:direct,httpOptions:{baseUrl:"https://generativelanguage.googleapis.com"}}:{});
   const extracted=await Promise.all(images.map(async img=>{
    const bytes=Buffer.from(img.data,"base64"),id=createHash("sha256").update(bytes).digest("hex");
-   const cacheKey=(model.includes("flash-lite")?"ocr/v3-minimal/":"ocr/v2/")+model+"/"+id;
+   const cacheKey=(model.includes("flash-lite")?"ocr/v4-fast-high/":"ocr/v2/")+model+"/"+id;
    let result=probe?null:await store.get(cacheKey,{type:"json"});
    const cached=!!result,ocrStart=Date.now();
    if(!result){
-    const r=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:prompt},{inlineData:img}]}],config:{responseMimeType:"application/json",temperature:0,...(model.includes("flash-lite")?{thinkingConfig:{thinkingLevel:"minimal"}}:{})}});
+    const r=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:model.includes("flash-lite")?fastPrompt:prompt},{inlineData:img}]}],config:{responseMimeType:"application/json",temperature:0,...(model.includes("flash-lite")?{thinkingConfig:{thinkingLevel:"minimal"},mediaResolution:"MEDIA_RESOLUTION_HIGH"}:{})}});
     result=JSON.parse(r.text);
+    if(!result||typeof result!=="object"||Array.isArray(result))throw new SyntaxError("Leitura inválida");
+    if(model.includes("flash-lite")){
+     const decoded=decodePhotoEAN(bytes,img.mimeType);
+     if(decoded){const printed=String(result.barcode||"").replace(/\D/g,"");result={...result,barcode:printed||decoded,barcode_conflict:!!printed&&printed!==decoded};}
+    }
     if(!probe)await store.setJSON(cacheKey,result);
    }
    console.info("vision_timing",JSON.stringify({model,cached,ms:Date.now()-ocrStart}));
