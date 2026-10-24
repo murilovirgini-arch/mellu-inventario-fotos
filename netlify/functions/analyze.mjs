@@ -6,6 +6,15 @@ import {mergeReadings} from "../../lib/recognition.mjs";
 const uuid=/^[a-f0-9-]{36}$/i;
 const prompt="Leia esta foto de UMA embalagem. Extraia somente informações claramente visíveis, sem completar letras ou números cortados. Responda JSON: {\"brand\":marca ou null,\"name\":nome comercial/tipo E linha do produto, copiando os dois textos, ou null,\"specifications\":variante essencial de identificação, como fragrância ou cor, ou null,\"content\":peso ou volume líquido com unidade, por exemplo 500 g ou 200 ml, ou null,\"barcode\":somente os dígitos impressos abaixo das barras, como string, ou null,\"validity\":validade como impressa ou null}. A descrição será marca + nome + variante + peso/volume. Priorize o rótulo FRONTAL para marca, nome e variante; use outras faces para completar peso/volume. Não use fabricante/distribuidor/endereço como nome, não inclua propaganda, benefícios, ingredientes extensos, lote, composição, número de aplicações nem validade na descrição. Preserve todos os dígitos e zeros iniciais do código; se não estiverem todos nítidos, barcode=null. Não confunda fabricação ou lote com validade.";
 const fastPrompt=prompt+" Inclua também brand_complete (booleano). Para brand, copie somente o logotipo inteiro: se o começo ou o fim da palavra estiver cortado, oculto pela curvatura ou sem leitura segura, use brand=null e brand_complete=false. Quando o logotipo estiver inteiro, brand_complete=true. Inclua sufixos do próprio logotipo, como PRO. Não complete a marca por semelhança ou memória.";
+async function readLabelTogether(images,model){
+ const direct=process.env.MELLU_GEMINI_API_KEY;
+ const ai=new GoogleGenAI(direct?{apiKey:direct,httpOptions:{baseUrl:"https://generativelanguage.googleapis.com"}}:{});
+ const instruction="Todas as fotos são ângulos do MESMO produto. Combine as partes visíveis. A marca pode aparecer distorcida numa face e estar inteira em outra: use a face em que o logotipo aparece por inteiro. Para o nome, priorize o título comercial completo no painel frontal, preservando a linha. Não troque o nome do produto por slogan como EPILAÇÃO PROFISSIONAL. "+fastPrompt;
+ const r=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:instruction},...images.map(img=>({inlineData:img}))]}],config:{responseMimeType:"application/json",temperature:0,thinkingConfig:{thinkingLevel:"minimal"},mediaResolution:"MEDIA_RESOLUTION_HIGH"}});
+ const result=JSON.parse(r.text);
+ if(!result||typeof result!=="object"||Array.isArray(result))throw new SyntaxError("Leitura inválida");
+ return result;
+}
 export default async(req,context)=>{
  if(req.method!=="POST")return json({error:"Método inválido."},405);
  if(!originOK(req))return json({error:"Origem inválida."},403);
@@ -28,6 +37,12 @@ export default async(req,context)=>{
   if(images.some(x=>!x||x.data.length>200000))throw Error("Foto inválida ou muito grande.");
   const direct=process.env.MELLU_GEMINI_API_KEY;
   const ai=new GoogleGenAI(direct?{apiKey:direct,httpOptions:{baseUrl:"https://generativelanguage.googleapis.com"}}:{});
+  if(probe&&body.joint===true){
+   const result=await readLabelTogether(images,model);
+   const decoded=[...new Set(images.map(img=>decodePhotoEAN(Buffer.from(img.data,"base64"),img.mimeType)).filter(Boolean))];
+   if(decoded.length===1){const printed=String(result.barcode||"").replace(/\D/g,"");result.barcode=printed||decoded[0];result.barcode_conflict=!!printed&&printed!==decoded[0];}
+   return json({model,elapsed_ms:Date.now()-started,readings:[result]});
+  }
   const extracted=await Promise.all(images.map(async img=>{
    const bytes=Buffer.from(img.data,"base64"),id=createHash("sha256").update(bytes).digest("hex");
    const cacheKey=(model.includes("flash-lite")?"ocr/v4-fast-high/":"ocr/v2/")+model+"/"+id;
@@ -55,6 +70,24 @@ export default async(req,context)=>{
   }
  }
  const product=mergeReadings(results),analysis_id=randomUUID();
+ if(model.includes("flash-lite")){
+  const normalize=s=>String(s||"").toLowerCase().trim();
+  const brands=new Set(results.filter(x=>x.brand_complete!==false&&x.brand).map(x=>normalize(x.brand)));
+  const names=new Set(results.filter(x=>x.name).map(x=>normalize(x.name)));
+  if(brands.size>1||names.size>1){
+   const choices=[];const signatures=new Set();
+   results.forEach((r,i)=>{if(r.name||r.brand){const sig=normalize(r.brand)+"|"+normalize(r.name);if(!signatures.has(sig)){signatures.add(sig);choices.push(ids[i]);}}});
+   const photoIds=[...new Set(choices)].slice(0,2);
+   const key="descriptions/v1/"+model+"/"+createHash("sha256").update(photoIds.join("|")).digest("hex");
+   let corrected=await store.get(key,{type:"json"});
+   if(!corrected){
+    const images=await Promise.all(photoIds.map(async id=>{const photo=await store.getWithMetadata("images/"+id,{type:"arrayBuffer"});if(!photo)throw Error("Foto não encontrada. Analise novamente.");return {mimeType:photo.metadata.contentType,data:Buffer.from(photo.data).toString("base64")};}));
+    corrected=await readLabelTogether(images,model);
+    await store.setJSON(key,corrected);
+   }
+   product.name=mergeReadings([{...corrected,barcode:product.barcode,validity:product.validity,barcode_conflict:false}]).name;
+  }
+ }
  ids=[...new Set(ids)];
  await store.setJSON("analyses/"+analysis_id,{product,photos:ids,model,created_at:new Date().toISOString()});
  return json({analysis_id,model,product,warnings:product.validity?[]:["Validade não legível. Acrescente uma foto da validade se ela estiver na embalagem."]});
