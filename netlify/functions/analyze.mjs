@@ -1,7 +1,7 @@
 import {GoogleGenAI} from "@google/genai";
 import {randomUUID,createHash} from "node:crypto";
 import {json,storeFor,originOK,imageData} from "../../lib/common.mjs";
-import {decodePhotoEAN} from "../../lib/barcode.mjs";
+import {decodePhotoEAN,prepareLabelImages} from "../../lib/barcode.mjs";
 import {mergeReadings} from "../../lib/recognition.mjs";
 const uuid=/^[a-f0-9-]{36}$/i;
 const prompt="Leia esta foto de UMA embalagem. Extraia somente informações claramente visíveis, sem completar letras ou números cortados. Responda JSON: {\"brand\":marca ou null,\"name\":nome comercial/tipo E linha do produto, copiando os dois textos, ou null,\"specifications\":variante essencial de identificação, como fragrância ou cor, ou null,\"content\":peso ou volume líquido com unidade, por exemplo 500 g ou 200 ml, ou null,\"barcode\":somente os dígitos impressos abaixo das barras, como string, ou null,\"validity\":validade como impressa ou null}. A descrição será marca + nome + variante + peso/volume. Priorize o rótulo FRONTAL para marca, nome e variante; use outras faces para completar peso/volume. Não use fabricante/distribuidor/endereço como nome, não inclua propaganda, benefícios, ingredientes extensos, lote, composição, número de aplicações nem validade na descrição. Preserve todos os dígitos e zeros iniciais do código; se não estiverem todos nítidos, barcode=null. Não confunda fabricação ou lote com validade.";
@@ -9,6 +9,7 @@ const fastPrompt=prompt+" Inclua também brand_complete (booleano). Para brand, 
 async function readLabelTogether(images,model){
  const direct=process.env.MELLU_GEMINI_API_KEY;
  const ai=new GoogleGenAI(direct?{apiKey:direct,httpOptions:{baseUrl:"https://generativelanguage.googleapis.com"}}:{});
+ images=prepareLabelImages(images);
  const instruction="Todas as fotos são ângulos do MESMO produto. Combine as partes visíveis. A marca pode aparecer distorcida numa face e estar inteira em outra: use a face em que o logotipo aparece por inteiro. Para o nome, priorize o título comercial completo no painel frontal, preservando a linha. Não troque o nome do produto por slogan como EPILAÇÃO PROFISSIONAL. "+fastPrompt;
  const r=await ai.models.generateContent({model,contents:[{role:"user",parts:[{text:instruction},...images.map(img=>({inlineData:img}))]}],config:{responseMimeType:"application/json",temperature:0,thinkingConfig:{thinkingLevel:"minimal"},mediaResolution:"MEDIA_RESOLUTION_HIGH"}});
  const result=JSON.parse(r.text);
@@ -21,7 +22,7 @@ export default async(req,context)=>{
  try{
  const body=await req.json(),store=storeFor(context);
  const started=Date.now(),probe=body.stage==="compare";
- let results=[],ids=[],model=body.quality==="fast"?"gemini-3.5-flash-lite":process.env.MELLU_AI_MODEL||"gemini-3.8-flash";
+ let results=[],ids=[],model=body.quality==="standard"?"gemini-3.8-flash":body.quality==="fast"?"gemini-3.5-flash-lite":process.env.MELLU_AI_MODEL||"gemini-3.5-flash-lite";
  if(Array.isArray(body.batch_ids)){
   if(!body.batch_ids.length||body.batch_ids.some(id=>!uuid.test(id)))throw Error("Leitura das fotos inválida. Analise novamente.");
   for(const id of new Set(body.batch_ids)){
