@@ -15,3 +15,5 @@
 .captureActions #captureShot{background:#fff;color:#23342d}
 .captureActions #captureUse{background:#a7d7ac;color:#173021}
 .captureDialog #captureFallback{margin:0;color:#c9dccc;font-size:12px}
+.resultFields{grid-template-columns:1fr 1fr}.resultFields label:first-child{grid-column:1/-1}
+@media(max-width:420px){.resultFields{grid-template-columns:1fr}.resultFields label:first-child{grid-column:auto}}
