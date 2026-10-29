@@ -3,7 +3,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 export async function postAnalysis(payload,{fetchImpl=fetch,wait=sleep,onRetry=()=>{},attempts=3,timeoutMs=35000,validate=()=>true}={}){
  for(let attempt=1;attempt<=attempts;attempt++){
   try{
-   const response=await fetchImpl("/.netlify/functions/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(timeoutMs)});
+   const response=await fetchImpl("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(timeoutMs)});
    let result;try{result=await response.json();}catch{result=null;}
    if(!response.ok){
     const error=new Error(result?.error||(transient.has(response.status)?"O serviço demorou para responder. Suas fotos foram preservadas.":"Não foi possível concluir esta leitura."));

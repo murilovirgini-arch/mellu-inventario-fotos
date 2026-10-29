@@ -1,0 +1,4 @@
+import test from "node:test";import assert from "node:assert/strict";import {mergeReadings,expiryParts} from "../lib/recognition.mjs";const base={name:"Produto",barcode:"7898936910530"};
+for(const dates of [["05 2024","05/2024"],["05/24","2024-05"],["31/05/2024","2024-05-31"],["05/2024","31/05/24"]])test("equivalent expiry "+dates.join(" = "),()=>assert.doesNotThrow(()=>mergeReadings([base,...dates.map(validity=>({validity}))])));
+for(const dates of [["05/2024","06/2024"],["05/24","05/25"],["30/05/2024","31/05/2024"]])test("conflicting expiry "+dates.join(" != "),()=>assert.throws(()=>mergeReadings([base,...dates.map(validity=>({validity}))]),/validades diferentes/));
+test("invalid calendar dates are not normalized",()=>{assert.equal(expiryParts("31/02/2024"),null);assert.equal(expiryParts("14/2024"),null);});
