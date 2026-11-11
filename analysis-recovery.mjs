@@ -1,10 +1,24 @@
 const transient=new Set([408,425,429,500,502,503,504]);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-export async function postAnalysis(payload,{fetchImpl=fetch,wait=sleep,onRetry=()=>{},attempts=3,timeoutMs=35000,validate=()=>true}={}){
+export class AnalysisConnectionError extends Error {
+ constructor(cause){
+  super("A conexão foi interrompida durante a leitura. As fotos continuam aqui. Verifique a conexão e toque em Ler embalagem com IA novamente.",{cause});
+ }
+}
+export async function postAnalysis(payload,{fetchImpl=fetch,wait=sleep,onRetry=()=>{},attempts=3,timeoutMs=35000,validate=()=>true,retryConnection=true}={}){
+ const body=JSON.stringify(payload);
  for(let attempt=1;attempt<=attempts;attempt++){
   try{
-   const response=await fetchImpl("/.netlify/functions/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(timeoutMs)});
-   let result;try{result=await response.json();}catch{result=null;}
+   const response=await fetchImpl("/.netlify/functions/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body,signal:AbortSignal.timeout(timeoutMs)}).catch(error=>{
+    if(error instanceof TypeError)throw new AnalysisConnectionError(error);
+    throw error;
+   });
+   let result;
+   try{result=await response.json();}catch(error){
+    if(error instanceof TypeError)throw new AnalysisConnectionError(error);
+    if(["TimeoutError","AbortError"].includes(error.name))throw error;
+    result=null;
+   }
    if(!response.ok){
     const error=new Error(result?.error||(transient.has(response.status)?"O serviço demorou para responder. Suas fotos foram preservadas.":"Não foi possível concluir esta leitura."));
     error.retryable=transient.has(response.status)||result?.retryable===true;
@@ -14,7 +28,7 @@ export async function postAnalysis(payload,{fetchImpl=fetch,wait=sleep,onRetry=(
    if(!result||!validate(result)){const error=new Error("O serviço retornou uma resposta incompleta. Suas fotos foram preservadas.");error.retryable=true;throw error;}
    return result;
   }catch(error){
-   const retryable=error.retryable===true||error instanceof TypeError||["TimeoutError","AbortError"].includes(error.name);
+   const retryable=error.retryable===true||(retryConnection&&error instanceof AnalysisConnectionError)||["TimeoutError","AbortError"].includes(error.name);
    if(!retryable||attempt===attempts)throw error;
    onRetry({attempt:attempt+1,attempts});
    await wait(error.delay??attempt*1000);
@@ -47,4 +61,15 @@ export async function readPhotoBatches(photos,{send,cache=new Map(),onProgress=(
  await Promise.all(Array.from({length:Math.min(concurrency,photos.length)},worker));
  if(errors.length)throw errors[0];
  return ids;
+}
+
+export async function readPhotoUploads(photos,{send,cache=new Map(),onProgress,onReconnect,keyOf}){
+ const options={cache,onProgress,keyOf};
+ try{
+  return await readPhotoBatches(photos,{...options,send:payload=>send(payload,{retryConnection:false})});
+ }catch(error){
+  if(!(error instanceof AnalysisConnectionError))throw error;
+  onReconnect?.();
+  return readPhotoBatches(photos,{...options,send,concurrency:1});
+ }
 }

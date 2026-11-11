@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {postAnalysis,readPhotoBatches} from "../analysis-recovery.mjs";
+import {postAnalysis,readPhotoBatches,readPhotoUploads} from "../analysis-recovery.mjs";
 const ok=id=>Response.json({batch_id:id});
 const opts={wait:async()=>{},validate:x=>typeof x.batch_id==="string"};
 test("recovers non-JSON 504 without another user click",async()=>{let calls=0,retries=0;const r=await postAnalysis({}, {...opts,fetchImpl:async()=>++calls===1?new Response("Gateway timeout",{status:504}):ok("read"),onRetry:()=>retries++});assert.equal(r.batch_id,"read");assert.equal(calls,2);assert.equal(retries,1);});
@@ -11,3 +11,32 @@ test("rejects incomplete successful response and recovers",async()=>{let calls=0
 test("retains successful photos and only resends failed photo on another attempt",async()=>{const cache=new Map(),calls=[],keyOf=async x=>x;let fail=true;const send=async p=>{const photo=p.images[0];calls.push(photo);if(photo==="back"&&fail)throw Error("temporary");return {batch_id:"id-"+photo};};await assert.rejects(readPhotoBatches(["front","back","date"],{send,cache,keyOf}));assert.equal(cache.size,2);fail=false;assert.deepEqual(await readPhotoBatches(["front","back","date"],{send,cache,keyOf}),["id-front","id-back","id-date"]);assert.deepEqual(calls.sort(),["back","back","date","front"]);});
 test("deduplicates identical photos while preserving input order",async()=>{let calls=0;const ids=await readPhotoBatches(["a","a","b","a"],{send:async p=>{calls++;return {batch_id:p.images[0]};},keyOf:async x=>x});assert.deepEqual(ids,["a","a","b","a"]);assert.equal(calls,2);});
 test("bounds active requests for ten photos",async()=>{let active=0,peak=0;const ids=await readPhotoBatches(Array.from({length:10},(_,i)=>String(i)),{keyOf:async x=>x,send:async p=>{peak=Math.max(peak,++active);await new Promise(r=>setTimeout(r,1));active--;return {batch_id:p.images[0]};}});assert.equal(ids.length,10);assert.equal(peak,3);});
+
+test("after a browser load error, retries only interrupted photos and uploads them one at a time",async()=>{
+ const calls=[],cache=new Map();
+ let recovering=false,active=0,peak=0;
+ const send=(payload,options)=>postAnalysis(payload,{...opts,...options,fetchImpl:async()=>{
+  const photo=payload.images[0];
+  calls.push(photo);
+  if(!recovering&&photo!=="front")throw new TypeError("Load failed");
+  if(recovering){
+   active++;
+   peak=Math.max(peak,active);
+   await new Promise(resolve=>setImmediate(resolve));
+   active--;
+  }
+  return ok(photo);
+ }});
+ const ids=await readPhotoUploads(["front","back","date"],{send,cache,keyOf:async x=>x,onReconnect:()=>{recovering=true;}});
+ assert.deepEqual(ids,["front","back","date"]);
+ assert.equal(peak,1);
+ assert.deepEqual(calls,["front","back","date","back","date"]);
+});
+test("describes a persistent browser load error and keeps retries bounded",async()=>{
+ let calls=0;
+ await assert.rejects(postAnalysis({}, {...opts,fetchImpl:async()=>{
+  calls++;
+  throw new TypeError("Load Error");
+ }}),/A conexão foi interrompida.*As fotos continuam aqui/);
+ assert.equal(calls,3);
+});
